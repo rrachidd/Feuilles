@@ -449,7 +449,79 @@ export default function App() {
                                     <button className="btn bi" onClick={() => {
                                         const w = window.open('', '_blank');
                                         if(!w) return;
-                                        w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>قائمة الطلاب</title><style>body{font-family:Tajawal,Arial,sans-serif;direction:rtl;font-size:10px}table{width:100%;border-collapse:collapse}th{background:#0f172a;color:#fff;padding:6px;border:1px solid #333}td{padding:4px;border:1px solid #999;text-align:center}tr:nth-child(even){background:#f5f5f5}@page{margin:5mm;size:A4 portrait}</style></head><body>${document.querySelector('.dtbl')?.outerHTML}<script>window.onload=()=>window.print()</script></body></html>`);
+                                        
+                                        const grouped: any = {};
+                                        filteredStudents.forEach(s => {
+                                            if(!grouped[s.sheet]) grouped[s.sheet] = [];
+                                            grouped[s.sheet].push(s);
+                                        });
+                                        const sections = Object.keys(grouped).sort();
+                                        
+                                        let htmlContent = '';
+                                        sections.forEach((sheetName, index) => {
+                                            const students = grouped[sheetName];
+                                            let tableRows = '';
+                                            students.forEach((sts: any, i: number) => {
+                                                tableRows += `<tr>
+                                                    <td>${i+1}</td>
+                                                    <td><strong>${sts.code}</strong></td>
+                                                    <td>${sts.lastname}</td>
+                                                    <td>${sts.firstname}</td>
+                                                    <td>${isMale(sts.gender)?'ذكر':'أنثى'}</td>
+                                                    <td>${sts.dept}</td>
+                                                    <td>${sts.sheet}</td>
+                                                </tr>`;
+                                            });
+                                            htmlContent += `
+                                            <div class="print-page">
+                                                <div class="page-header">
+                                                    <h2 style="color:#0f172a; margin:0 0 5px 0; font-size:16px;">قائمة الطلاب</h2>
+                                                    <h3 style="color:#0369a1; margin:0; font-size:13px;">القسم: ${sheetName} — العدد: ${students.length}</h3>
+                                                </div>
+                                                <table>
+                                                    <thead>
+                                                        <tr><th style="width:5%">#</th><th style="width:15%">الرمز</th><th style="width:20%">اللقب</th><th style="width:20%">الاسم</th><th style="width:10%">الجنس</th><th style="width:15%">تاريخ الازدياد</th><th style="width:15%">القسم</th></tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        ${tableRows}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            `;
+                                        });
+
+                                        w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>قائمة الطلاب</title><style>
+                                            body{font-family:Tajawal,Arial,sans-serif;direction:rtl;font-size:10px;background:#fff;margin:0;}
+                                            table{width:100%;border-collapse:collapse;margin:0;}
+                                            th{background:#0f172a !important;color:#fff !important;padding:4px;border:1px solid #333;-webkit-print-color-adjust:exact;color-adjust:exact;font-size:10px;}
+                                            td{padding:2px 4px;border:1px solid #999;text-align:center;}
+                                            tr:nth-child(even){background:#f8fafc !important;-webkit-print-color-adjust:exact;color-adjust:exact;}
+                                            
+                                            .print-page { 
+                                                page-break-after: always; 
+                                                break-after: page; 
+                                                page-break-inside: avoid;
+                                                box-sizing: border-box;
+                                            }
+                                            .print-page:last-child {
+                                                page-break-after: auto;
+                                                break-after: auto;
+                                            }
+                                            .page-header {
+                                                text-align:center; 
+                                                margin-bottom:6px; 
+                                                padding-bottom:3px; 
+                                                border-bottom:2px solid #ccc;
+                                            }
+                                            .page-header h2 { margin:0 0 3px 0; font-size:15px; }
+                                            .page-header h3 { margin:0; font-size:12px; }
+                                            table { page-break-inside:auto; }
+                                            tr    { page-break-inside:avoid; page-break-after:auto; }
+                                            thead { display:table-header-group; }
+                                            tfoot { display:table-footer-group; }
+                                            
+                                            @page{margin:5mm;size:A4 portrait;}
+                                        </style></head><body>${htmlContent}<script>setTimeout(()=>{window.print();}, 500);</script></body></html>`);
                                         w.document.close();
                                     }}>طباعة القائمة</button>
                                 </div>
