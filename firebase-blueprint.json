@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "A student in the system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "code": { "type": "string" },
+        "lastname": { "type": "string" },
+        "firstname": { "type": "string" },
+        "gender": { "type": "string" },
+        "dept": { "type": "string" },
+        "sheet": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["userId", "code"]
+    },
+    "AbsenceSettings": {
+      "title": "Absence Settings",
+      "description": "Settings for absence sheet",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "aDir": { "type": "string" },
+        "aSch": { "type": "string" },
+        "aTri": { "type": "string" },
+        "aFrom": { "type": "string" },
+        "aTo": { "type": "string" },
+        "aTeach": { "type": "string" },
+        "aHalf": { "type": "string" }
+      },
+      "required": ["userId"]
+    }
+  },
+  "firestore": {
+    "students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Student roster"
+    },
+    "settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AbsenceSettings" },
+      "description": "Saved settings for a user"
+    }
+  }
+}

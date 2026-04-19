@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} { 
+      allow read, write: if false; 
+    }
+
+    // Primitive Helpers
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['userId']) &&
+             data.userId == request.auth.uid &&
+             data.userId is string && data.userId.size() > 0 &&
+             (!('code' in data) || (data.code is string && data.code.size() <= 100)) &&
+             (!('lastname' in data) || (data.lastname is string && data.lastname.size() <= 100)) &&
+             (!('firstname' in data) || (data.firstname is string && data.firstname.size() <= 100)) &&
+             (!('gender' in data) || (data.gender is string && data.gender.size() <= 100)) &&
+             (!('dept' in data) || (data.dept is string && data.dept.size() <= 100)) &&
+             (!('sheet' in data) || (data.sheet is string && data.sheet.size() <= 100)) &&
+             (!('id' in data) || data.id is number);
+    }
+    
+    function isValidSettings(data) {
+      return data.keys().hasAll(['userId']) &&
+             data.userId == request.auth.uid &&
+             data.userId is string && data.userId.size() > 0 &&
+             (!('aDir' in data) || (data.aDir is string && data.aDir.size() <= 200)) &&
+             (!('aSch' in data) || (data.aSch is string && data.aSch.size() <= 200)) &&
+             (!('aTri' in data) || (data.aTri is string && data.aTri.size() <= 200)) &&
+             (!('aFrom' in data) || (data.aFrom is string && data.aFrom.size() <= 200)) &&
+             (!('aTo' in data) || (data.aTo is string && data.aTo.size() <= 200)) &&
+             (!('aTeach' in data) || (data.aTeach is string && data.aTeach.size() <= 200)) &&
+             (!('aHalf' in data) || data.aHalf is number);
+    }
+
+    match /students/{studentId} {
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow get: if isSignedIn() && isValidId(studentId) && (resource == null || resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(studentId) && isValidStudent(incoming());
+      allow update: if isSignedIn() && isValidId(studentId) && isValidStudent(incoming()) && incoming().userId == existing().userId;
+      allow delete: if isSignedIn() && isValidId(studentId) && existing().userId == request.auth.uid;
+    }
+
+    match /settings/{settingId} {
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow get: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid && isValidSettings(incoming());
+        allow update: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid && isValidSettings(incoming()) && incoming().userId == existing().userId;
+        allow delete: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid;
+    }
+  }
+}
