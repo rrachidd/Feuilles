@@ -46,6 +46,21 @@
         "userId": { "type": "string" }
       },
       "required": ["userId", "code"]
+    },
+    "Permit": {
+      "title": "Permit",
+      "description": "Archived permit issuance",
+      "type": "object",
+      "properties": {
+        "studentName": { "type": "string" },
+        "studentDept": { "type": "string" },
+        "subject": { "type": "string" },
+        "type": { "type": "string" },
+        "observation": { "type": "string" },
+        "date": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["userId", "studentName", "date"]
     }
   },
   "firestore": {
@@ -60,6 +75,10 @@
     "pins/{pinId}": {
       "schema": { "$ref": "#/entities/Pin" },
       "description": "Student PIN codes"
+    },
+    "permits/{permitId}": {
+      "schema": { "$ref": "#/entities/Permit" },
+      "description": "Archived permits"
     }
   }
 }

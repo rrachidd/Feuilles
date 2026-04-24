@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { auth, loginWithGoogle, logout, db } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, getDocs, setDoc, doc, writeBatch, deleteDoc, query, where, getDoc, orderBy } from 'firebase/firestore';
+import { collection, getDocs, setDoc, doc, writeBatch, deleteDoc, query, where, getDoc, orderBy, limit, onSnapshot, addDoc } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -20,7 +20,7 @@ export default function App() {
   const [fileName, setFileName] = useState('');
   
   // UI States
-  const [activeTab, setActiveTab] = useState<'students' | 'absence' | 'permit' | 'pin'>('students');
+  const [activeTab, setActiveTab] = useState<'students' | 'absence' | 'permit' | 'pin' | 'docs'>('students');
   const [mappingSuccess, setMappingSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -424,6 +424,7 @@ export default function App() {
                             <button className={`t-btn ${activeTab === 'absence' ? 'on' : ''}`} onClick={() => setActiveTab('absence')}>ورقة الغياب النصف أسبوعية</button>
                             <button className={`t-btn ${activeTab === 'permit' ? 'on' : ''}`} onClick={() => setActiveTab('permit')}>ورقة السماح بالدخول</button>
                             <button className={`t-btn ${activeTab === 'pin' ? 'on' : ''}`} onClick={() => setActiveTab('pin')}>القن السري للتلميذ</button>
+                            <button className={`t-btn ${activeTab === 'docs' ? 'on' : ''}`} onClick={() => setActiveTab('docs')}>وثائق</button>
                         </div>
 
                         {activeTab === 'students' && (
@@ -553,9 +554,11 @@ export default function App() {
 
                         {activeTab === 'absence' && <AbsenceView sheets={sheets} allStudents={allStudents} rawState={{aDir, setaDir, aSch, setaSch, aTri, setaTri, aFrom, setaFrom, aTo, setaTo, aTeach, setaTeach, aHalf, setaHalf, selectedSheets, setSelectedSheets, toggleSheetSelection, toggleAllSheets }} />}
 
-                        {activeTab === 'permit' && <PermitView sheets={sheets} allStudents={allStudents} rawState={{aDir, aSch}} />}
+                        {activeTab === 'permit' && <PermitView sheets={sheets} allStudents={allStudents} rawState={{aDir, aSch, user}} />}
 
                         {activeTab === 'pin' && <PinView sheets={sheets} user={user} />}
+
+                        {activeTab === 'docs' && <DocsView allStudents={allStudents} rawState={{aDir, aSch, user}} />}
 
                     </div>
                 </>
@@ -607,9 +610,25 @@ export default function App() {
 }
 
 function PermitView({sheets, allStudents, rawState}: any) {
-    const {aDir, aSch} = rawState;
-    const [permits, setPermits] = useState<any[]>(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: ''}));
+    const {aDir, aSch, user} = rawState;
+    const [permits, setPermits] = useState<any[]>(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: '', subject: ''}));
+    const [loading, setLoading] = useState(false);
     
+    // Statistics state
+    const [archivedPermits, setArchivedPermits] = useState<any[]>([]);
+    
+    useEffect(() => {
+        if(!user) return;
+        const q = query(collection(db, "permits"), where("userId", "==", user.uid), limit(1000));
+        const unsub = onSnapshot(q, (snap) => {
+            const list: any[] = [];
+            snap.forEach(d => list.push({id: d.id, ...d.data()}));
+            const sorted = list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+            setArchivedPermits(sorted);
+        });
+        return () => unsub();
+    }, [user]);
+
     // Per-permit search states
     const [searchIndices, setSearchIndices] = useState<{[key: number]: string}>({});
     const [filteredChoices, setFilteredChoices] = useState<{[key: number]: any[]}>({});
@@ -642,12 +661,86 @@ function PermitView({sheets, allStudents, rawState}: any) {
     };
 
     const clearPermits = () => {
-        setPermits(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: ''}));
+        setPermits(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: '', subject: ''}));
         setSearchIndices({});
         setFilteredChoices({});
     };
 
-    const printPermits = () => {
+    const archivePermit = async (index: number) => {
+        const p = permits[index];
+        if(!p.name.trim() || !user) { alert('يرجى اختيار تلميذ أولاً من خلال البحث'); return; }
+        setLoading(true);
+        try {
+            await addDoc(collection(db, "permits"), {
+                studentName: p.name,
+                studentDept: p.dept,
+                subject: p.subject,
+                type: p.type,
+                observation: p.observation,
+                date: new Date().toISOString(),
+                userId: user.uid
+            });
+            alert('✅ تمت أرشفة التلميذ ' + p.name + ' بنجاح');
+            const newP = [...permits];
+            newP[index] = {name: '', dept: '', date: '', time: '', type: 'غياب', observation: '', subject: ''};
+            setPermits(newP);
+        } catch(e: any) { 
+            console.error(e);
+            alert('❌ خطأ في الأرشفة: ' + e.message); 
+        }
+        setLoading(false);
+    };
+
+    const archiveAll = async () => {
+        const toArchive = permits.filter(p => p.name.trim().length > 0);
+        if(toArchive.length === 0 || !user) { alert('لا توجد بيانات مكتملة للأرشفة'); return; }
+        setLoading(true);
+        try {
+            const batch = writeBatch(db);
+            const now = new Date().toISOString();
+            toArchive.forEach(p => {
+                const docRef = doc(collection(db, "permits"));
+                batch.set(docRef, {
+                    studentName: p.name,
+                    studentDept: p.dept,
+                    subject: p.subject,
+                    type: p.type,
+                    observation: p.observation,
+                    date: now,
+                    userId: user.uid
+                });
+            });
+            await batch.commit();
+            alert(`✅ تمت أرشفة ${toArchive.length} عمليات بنجاح`);
+            clearPermits();
+        } catch(e: any) { 
+            console.error(e);
+            alert('❌ خطأ في أرشفة الكل: ' + e.message); 
+        }
+        setLoading(false);
+    };
+
+    const printPermits = async () => {
+        // Save to archive first
+        const toArchive = permits.filter(p => p.name.trim().length > 0);
+        if(toArchive.length > 0 && user) {
+            const batch = writeBatch(db);
+            const now = new Date().toISOString();
+            toArchive.forEach(p => {
+                const docRef = doc(collection(db, "permits"));
+                batch.set(docRef, {
+                    studentName: p.name,
+                    studentDept: p.dept,
+                    subject: p.subject,
+                    type: p.type,
+                    observation: p.observation,
+                    date: now,
+                    userId: user.uid
+                });
+            });
+            await batch.commit();
+        }
+
         const w = window.open('', '_blank');
         if(!w) return;
 
@@ -663,7 +756,7 @@ function PermitView({sheets, allStudents, rawState}: any) {
                 <div class="permit-body">
                     <div style="margin-bottom:4px; font-weight:bold; font-size:9pt;">المرجو السماح للتلميذ(ة) بالدخول:</div>
                     <div class="permit-row"><span>الاسم واللقب:</span> <strong>${p.name || '................................'}</strong></div>
-                    <div class="permit-row"><span>القسم:</span> <strong>${p.dept || '................'}</strong></div>
+                    <div class="permit-row"><span>القسم:</span> <strong>${p.dept || '................'}</strong> <span style="margin-right:10px">المادة:</span> <strong>${p.subject || '................'}</strong></div>
                     <div class="permit-row">
                         <span>التاريخ:</span> <strong>.........</strong>
                         <span style="margin-right:8px">الساعة:</span> <strong>.........</strong>
@@ -728,6 +821,7 @@ function PermitView({sheets, allStudents, rawState}: any) {
                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px'}}>
                     <h3 style={{color: 'var(--pri)', margin: 0}}>إعداد ورقة السماح بالدخول (10 تصاريح في الصفحة)</h3>
                     <div style={{display: 'flex', gap: '10px'}}>
+                        <button className="btn bs" onClick={archiveAll} disabled={loading}>أرشفة العمليات الحالية</button>
                         <button className="btn bp" onClick={printPermits}>طباعة ورقة السماح (A4)</button>
                         <button className="btn bl" onClick={clearPermits}>مسح الكل</button>
                     </div>
@@ -738,7 +832,10 @@ function PermitView({sheets, allStudents, rawState}: any) {
                         <div key={i} style={{border: '1px solid var(--brd)', padding: '12px', borderRadius: '8px', background: '#f8fafc', position: 'relative'}}>
                             <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
                                 <span style={{fontWeight: 'bold', fontSize: '13px', color: 'var(--pri)'}}>التصريح #{i+1}</span>
-                                <button onClick={() => updatePermit(i, {name: '', dept: '', observation: ''})} style={{fontSize: '10px', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer'}}>مسح</button>
+                                <div style={{display: 'flex', gap: '8px'}}>
+                                    <button onClick={() => archivePermit(i)} style={{fontSize: '10px', color: 'var(--pri)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'bold'}}>أرشفة</button>
+                                    <button onClick={() => updatePermit(i, {name: '', dept: '', observation: '', subject: ''})} style={{fontSize: '10px', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer'}}>مسح</button>
+                                </div>
                             </div>
                             
                             <div style={{marginBottom: '8px', position: 'relative'}}>
@@ -780,43 +877,240 @@ function PermitView({sheets, allStudents, rawState}: any) {
                                 <div>
                                     <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>القسم:</label>
                                     <select 
-                                        className="fc" 
-                                        style={{fontSize: '12px', padding: '6px'}} 
-                                        value={p.dept} 
-                                        onChange={e => updatePermit(i, {dept: e.target.value})}
-                                    >
-                                        <option value="">-- اختر القسم --</option>
-                                        {sheets.map((s: string) => <option key={s} value={s}>{s}</option>)}
-                                    </select>
+                                         className="fc" 
+                                         style={{fontSize: '12px', padding: '6px'}} 
+                                         value={p.dept} 
+                                         onChange={e => updatePermit(i, {dept: e.target.value})}
+                                     >
+                                         <option value="">-- اختر القسم --</option>
+                                         {sheets.map((s: string) => <option key={s} value={s}>{s}</option>)}
+                                     </select>
+                                 </div>
+                                 <div style={{gridColumn: 'span 2'}}>
+                                     <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>المادة:</label>
+                                     <select 
+                                         className="fc" 
+                                         style={{fontSize: '12px', padding: '6px'}} 
+                                         value={p.subject} 
+                                         onChange={e => updatePermit(i, {subject: e.target.value})}
+                                     >
+                                         <option value="">-- اختر المادة --</option>
+                                         <option value="اللغة العربية">اللغة العربية</option>
+                                         <option value="التربية الإسلامية">التربية الإسلامية</option>
+                                         <option value="الاجتماعيات">الاجتماعيات</option>
+                                         <option value="اللغة الفرنسية">اللغة الفرنسية</option>
+                                         <option value="الرياضيات">الرياضيات</option>
+                                         <option value="العلوم الفيزيائية">العلوم الفيزيائية</option>
+                                         <option value="الفيزياء والكيمياء">الفيزياء والكيمياء</option>
+                                         <option value="علوم الحياة والأرض">علوم الحياة والأرض</option>
+                                         <option value="التربية البدنية">التربية البدنية</option>
+                                         <option value="اللغة الإنجليزية">اللغة الإنجليزية</option>
+                                         <option value="التكنولوجيا">التكنولوجيا</option>
+                                         <option value="التربية التشكيلية">التربية التشكيلية</option>
+                                         <option value="التربية الموسيقية">التربية الموسيقية</option>
+                                         <option value="الإعلاميات">الإعلاميات</option>
+                                         <option value="الفلسفة">الفلسفة</option>
+                                         <option value="حراسة عامة">حراسة عامة</option>
+                                         <option value="أخرى">أخرى</option>
+                                     </select>
+                                 </div>
+                             </div>
+
+                             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px'}}>
+                                 <div style={{display: 'flex', flexDirection: 'column'}}>
+                                     <label style={{fontSize: '11px', marginBottom: '3px'}}>النوع:</label>
+                                     <div style={{display: 'flex', gap: '8px', marginTop: '5px'}}>
+                                         <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
+                                             <input type="radio" name={`type-${i}`} checked={p.type === 'غياب'} onChange={() => updatePermit(i, {type: 'غياب'})} /> غياب
+                                         </label>
+                                         <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
+                                             <input type="radio" name={`type-${i}`} checked={p.type === 'تأخر'} onChange={() => updatePermit(i, {type: 'تأخر'})} /> تأخر
+                                         </label>
+                                     </div>
+                                 </div>
+                             </div>
+
+                             <div>
+                                 <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>ملاحظة:</label>
+                                 <input 
+                                     className="fc" 
+                                     style={{fontSize: '12px', padding: '6px'}} 
+                                     placeholder="ملاحظة إضافية" 
+                                     value={p.observation} 
+                                     onChange={e => updatePermit(i, {observation: e.target.value})} 
+                                 />
+                             </div>
+                         </div>
+                     ))}
+                 </div>
+
+                 <div style={{marginTop: '40px', borderTop: '2px solid #f1f5f9', paddingTop: '20px'}}>
+                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px'}}>
+                         <h4 style={{color: 'var(--pri)', margin: 0}}>إحصائيات وأرشيف السماح بالدخول</h4>
+                         <button className="btn bl" style={{fontSize:'11px'}} onClick={async () => {
+                             if(confirm('هل أنت متأكد من حذف الأرشيف بالكامل؟')) {
+                                 const q = query(collection(db, "permits"), where("userId", "==", user.uid));
+                                 const snap = await getDocs(q);
+                                 const b = writeBatch(db);
+                                 snap.forEach(d => b.delete(d.ref));
+                                 await b.commit();
+                             }
+                         }}>مسح الأرشيف</button>
+                     </div>
+
+                     {archivedPermits.length === 0 ? (
+                         <div style={{textAlign: 'center', padding: '40px', background: '#f8fafc', borderRadius: '12px', border: '1px dashed #cbd5e1', color: '#94a3b8'}}>
+                             لا توجد بيانات مؤرشفة حالياً. ستظهر الإحصائيات هنا بمجرد البدء في طباعة أوراق السماح بالدخول.
+                         </div>
+                     ) : (
+                         <>
+                            <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '15px', marginBottom: '20px'}}>
+                                <div className="stat" style={{textAlign:'right', borderRight: '4px solid var(--pri)'}}>
+                                    <div className="stat-n">{archivedPermits.length}</div>
+                                    <div className="stat-l">إجمالي التصاريح</div>
                                 </div>
-                                <div style={{display: 'flex', flexDirection: 'column'}}>
-                                    <label style={{fontSize: '11px', marginBottom: '3px'}}>النوع:</label>
-                                    <div style={{display: 'flex', gap: '8px', marginTop: '5px'}}>
-                                        <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
-                                            <input type="radio" name={`type-${i}`} checked={p.type === 'غياب'} onChange={() => updatePermit(i, {type: 'غياب'})} /> غياب
-                                        </label>
-                                        <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
-                                            <input type="radio" name={`type-${i}`} checked={p.type === 'تأخر'} onChange={() => updatePermit(i, {type: 'تأخر'})} /> تأخر
-                                        </label>
+                                <div className="stat" style={{textAlign:'right', borderRight: '4px solid #ef4444'}}>
+                                    <div className="stat-n">
+                                        {archivedPermits.filter(p => p.type === 'غياب').length}
                                     </div>
+                                    <div className="stat-l">إجمالي الغيابات</div>
+                                </div>
+                                <div className="stat" style={{textAlign:'right', borderRight: '4px solid #f59e0b'}}>
+                                    <div className="stat-n">
+                                        {archivedPermits.filter(p => p.type === 'تأخر').length}
+                                    </div>
+                                    <div className="stat-l">إجمالي التأخرات</div>
+                                </div>
+                                <div className="stat" style={{textAlign:'right', borderRight: '4px solid #10b981'}}>
+                                    <div className="stat-n">
+                                        {Array.from(new Set(archivedPermits.map(p => p.studentName))).length}
+                                    </div>
+                                    <div className="stat-l">تلاميذ مستفيدون</div>
                                 </div>
                             </div>
 
-                            <div>
-                                <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>ملاحظة:</label>
-                                <input 
-                                    className="fc" 
-                                    style={{fontSize: '12px', padding: '6px'}} 
-                                    placeholder="ملاحظة إضافية" 
-                                    value={p.observation} 
-                                    onChange={e => updatePermit(i, {observation: e.target.value})} 
-                                />
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
+                             <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px'}}>
+                                 <div style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '15px'}}>
+                                     <h5 style={{margin: '0 0 10px 0', fontSize: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '5px'}}>الأقسام الأكثر تسجيلاً</h5>
+                                     <div className="tscroll" style={{maxHeight: '250px'}}>
+                                         <table className="dtbl" style={{fontSize: '12px'}}>
+                                             <thead><tr><th>القسم</th><th>الغيار</th><th>التأخر</th><th>المجموع</th></tr></thead>
+                                             <tbody>
+                                                 {Object.entries(archivedPermits.reduce((acc: any, p: any) => {
+                                                     if(!p.studentDept) return acc;
+                                                     if(!acc[p.studentDept]) acc[p.studentDept] = {a:0, t:0};
+                                                     if(p.type === 'غياب') acc[p.studentDept].a++; else acc[p.studentDept].t++;
+                                                     return acc;
+                                                 }, {})).sort((a: any, b: any) => (b[1].a + b[1].t) - (a[1].a + a[1].t)).slice(0, 10).map(([dept, data]: [any, any]) => (
+                                                     <tr key={dept}>
+                                                         <td>{dept}</td>
+                                                         <td style={{color:'#ef4444'}}>{data.a}</td>
+                                                         <td style={{color:'#f59e0b'}}>{data.t}</td>
+                                                         <td><strong>{data.a + data.t}</strong></td>
+                                                     </tr>
+                                                 ))}
+                                             </tbody>
+                                         </table>
+                                     </div>
+                                 </div>
+
+                                 <div style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '15px'}}>
+                                     <h5 style={{margin: '0 0 10px 0', fontSize: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '5px'}}>المواد الأكثر غيابا وتأخرا</h5>
+                                     <div className="tscroll" style={{maxHeight: '250px'}}>
+                                         <table className="dtbl" style={{fontSize: '12px'}}>
+                                             <thead><tr><th>المادة</th><th>الغياب</th><th>التأخر</th></tr></thead>
+                                             <tbody>
+                                                 {Object.entries(archivedPermits.reduce((acc: any, p: any) => {
+                                                     if (!p.subject) return acc;
+                                                     if(!acc[p.subject]) acc[p.subject] = {a:0, t:0};
+                                                     if(p.type === 'غياب') acc[p.subject].a++; else acc[p.subject].t++;
+                                                     return acc;
+                                                 }, {})).sort((a: any, b: any) => (b[1].a + b[1].t) - (a[1].a + a[1].t)).slice(0, 10).map(([subj, data]: [any, any]) => (
+                                                     <tr key={subj}>
+                                                         <td>{subj}</td>
+                                                         <td style={{color:'#ef4444'}}>{data.a}</td>
+                                                         <td style={{color:'#f59e0b'}}>{data.t}</td>
+                                                     </tr>
+                                                 ))}
+                                             </tbody>
+                                         </table>
+                                     </div>
+                                 </div>
+
+                                 <div style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '15px'}}>
+                                     <h5 style={{margin: '0 0 10px 0', fontSize: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '5px'}}>التلاميذ الأكثر اختيارا (غياب / تأخر)</h5>
+                                     <div className="tscroll" style={{maxHeight: '250px'}}>
+                                         <table className="dtbl" style={{fontSize: '12px'}}>
+                                             <thead><tr><th>التلميذ</th><th>القسم</th><th>غ</th><th>ت</th></tr></thead>
+                                             <tbody>
+                                                 {Object.entries(archivedPermits.reduce((acc: any, p: any) => {
+                                                     const key = `${p.studentName}|${p.studentDept}`;
+                                                     if(!acc[key]) acc[key] = {a:0, t:0};
+                                                     if(p.type === 'غياب') acc[key].a++; else acc[key].t++;
+                                                     return acc;
+                                                 }, {})).sort((a: any, b: any) => (b[1].a + b[1].t) - (a[1].a + a[1].t)).slice(0, 15).map(([key, data]: [any, any]) => {
+                                                     const [name, dept] = key.split('|');
+                                                     return <tr key={key}>
+                                                         <td>{name}</td>
+                                                         <td>{dept}</td>
+                                                         <td style={{color:'#ef4444'}}>{data.a}</td>
+                                                         <td style={{color:'#f59e0b'}}>{data.t}</td>
+                                                     </tr>
+                                                 })}
+                                             </tbody>
+                                         </table>
+                                     </div>
+                                 </div>
+
+                                 <div style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '15px'}}>
+                                     <h5 style={{margin: '0 0 10px 0', fontSize: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '5px'}}>تحليل غيابات التلاميذ حسب المواد</h5>
+                                     <div className="tscroll" style={{maxHeight: '250px'}}>
+                                         <table className="dtbl" style={{fontSize: '11px'}}>
+                                             <thead><tr><th>التلميذ</th><th>المادة</th><th>غ</th><th>ت</th></tr></thead>
+                                             <tbody>
+                                                 {Object.entries(archivedPermits.reduce((acc: any, p: any) => {
+                                                     if(!p.subject) return acc;
+                                                     const key = `${p.studentName}|${p.subject}`;
+                                                     if(!acc[key]) acc[key] = {a:0, t:0};
+                                                     if(p.type === 'غياب') acc[key].a++; else acc[key].t++;
+                                                     return acc;
+                                                 }, {})).sort((a: any, b: any) => (b[1].a + b[1].t) - (a[1].a + a[1].t)).slice(0, 20).map(([key, data]: [any, any]) => {
+                                                     const [name, subj] = key.split('|');
+                                                     return <tr key={key}>
+                                                         <td>{name}</td>
+                                                         <td><strong>{subj}</strong></td>
+                                                         <td style={{color:'#ef4444'}}>{data.a}</td>
+                                                         <td style={{color:'#f59e0b'}}>{data.t}</td>
+                                                     </tr>
+                                                 })}
+                                             </tbody>
+                                         </table>
+                                     </div>
+                                 </div>
+
+                                 <div style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '15px'}}>
+                                     <h5 style={{margin: '0 0 10px 0', fontSize: '14px', borderBottom: '1px solid #f1f5f9', paddingBottom: '5px'}}>آخر 10 تصاريح مؤرشفة</h5>
+                                     <div className="tscroll" style={{maxHeight: '200px'}}>
+                                         <table className="dtbl" style={{fontSize: '11px'}}>
+                                             <thead><tr><th>التاريخ</th><th>التلميذ</th><th>المادة</th></tr></thead>
+                                             <tbody>
+                                                 {archivedPermits.slice(0, 10).map((p: any) => (
+                                                     <tr key={p.id}>
+                                                         <td>{new Date(p.date).toLocaleDateString('ar-MA')}</td>
+                                                         <td>{p.studentName}</td>
+                                                         <td>{p.subject}</td>
+                                                     </tr>
+                                                 ))}
+                                             </tbody>
+                                         </table>
+                                     </div>
+                                 </div>
+                             </div>
+                         </>
+                     )}
+                 </div>
+             </div>
+         </div>
     );
 }
 
@@ -1194,7 +1488,7 @@ function PinView({sheets, user}: any) {
                     <div class="pin-header">القن السري لمنصة مسار</div>
                     <div class="pin-row"><span>التلميذ:</span> <strong>${p.name}</strong></div>
                     <div class="pin-row"><span>القسم:</span> <strong>${p.dept || '...'}</strong></div>
-                    <div class="pin-row"><span>رقم مسار:</span> <strong>${p.code}</strong></div>
+                    <div class="pin-row"><span>رقم مسار:</span> <strong>${p.code}@taalim.ma</strong></div>
                     <div class="pin-row"><span>الازدياد:</span> <strong>${p.birthDate || '...'}</strong></div>
                     <div class="pin-row pin-code"><span>القن السري:</span> <strong>${p.pin}</strong></div>
                     <div class="pin-footer">يرجى عدم مشاركة هذا القن مع أي شخص</div>
@@ -1298,6 +1592,247 @@ function PinView({sheets, user}: any) {
                         </tbody>
                     </table>
                     {filteredPins.length === 0 && <div style={{textAlign:'center', padding:'40px', color:'#94a3b8'}}>لا توجد بيانات لهذه الفئة، يرجى استيراد ملفات Excel</div>}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function DocsView({allStudents, rawState}: any) {
+    const {aDir, aSch} = rawState;
+    const [selectedStudent, setSelectedStudent] = useState<any>(null);
+    const [docType, setDocType] = useState('absence_commitment');
+    const [search, setSearch] = useState('');
+    const [filteredChoices, setFilteredChoices] = useState<any[]>([]);
+    const [notes, setNotes] = useState('');
+
+    const handleSearch = (val: string) => {
+        setSearch(val);
+        if (val.trim().length > 1) {
+            const t = val.toLowerCase();
+            const choices = allStudents.filter((s:any) => 
+                [s.firstname, s.lastname, s.code].some(v => String(v).toLowerCase().includes(t))
+            ).slice(0, 10);
+            setFilteredChoices(choices);
+        } else {
+            setFilteredChoices([]);
+        }
+    };
+
+    const selectStudent = (student: any) => {
+        setSelectedStudent(student);
+        setSearch('');
+        setFilteredChoices([]);
+    };
+
+    const printDoc = (isBlank: boolean = false) => {
+        if(!isBlank && !selectedStudent) { alert('يرجى اختيار تلميذ أولاً'); return; }
+        const w = window.open('', '_blank');
+        if(!w) return;
+
+        let content = '';
+        const dateStr = new Date().toLocaleDateString('ar-MA');
+        const stName = isBlank ? '................................................' : `${selectedStudent.lastname} ${selectedStudent.firstname}`;
+        const stCode = isBlank ? '........................' : selectedStudent.code;
+        const stDept = isBlank ? '........................' : selectedStudent.sheet;
+
+        if(docType === 'absence_commitment') {
+            content = `
+            <div class="doc-header">
+                <div>المملكة المغربية<br>وزارة التربية الوطنية</div>
+                <div style="text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+            </div>
+            <h1 style="text-align:center; text-decoration:underline; margin: 40px 0;">التزام ولي الأمر بخصوص الغياب</h1>
+            <p>أنا الموقع أسفله السيد(ة): ..............................................................</p>
+            <p>رقم البطاقة الوطنية: ....................................... صادر بتاريخ: .....................</p>
+            <p>بصفتي ولي أمر التلميذ(ة): <strong>${stName}</strong></p>
+            <p>المسجل(ة) بالقسم: <strong>${stDept}</strong> رقم مسار: <strong>${stCode}</strong></p>
+            <p style="margin-top:20px; line-height:1.8;">
+                ألتزم بمتابعة حضور ابني/ابنتي والمواظبة على الدروس، وفي حالة تكرار الغياب غير المبرر أتحمل كامل المسؤولية في الإجراءات الإدارية المتخذة في حقه(ا).
+                كما ألتزم بإخبار إدارة المؤسسة عن أي غياب في حينه وتقديم التبريرات القانونية اللازمة.
+            </p>
+            <p style="margin-top:20px; text-align:right;">ملاحظات إضافية: ${isBlank ? '................................' : (notes || '................................')}</p>
+            <div style="display:flex; justify-content:space-between; margin-top:60px;">
+                <div>توقيع ولي الأمر</div>
+                <div>حرر بـ ................. في: ${dateStr}</div>
+            </div>
+            `;
+        } else if(docType === 'violation') {
+            content = `
+            <div class="doc-header">
+                <div>المملكة المغربية<br>وزارة التربية الوطنية</div>
+                <div style="text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+            </div>
+            <h1 style="text-align:center; text-decoration:underline; margin: 40px 0;">تقرير مخالفة تلميذ</h1>
+            <div style="border:1px solid #000; padding:20px;">
+                <p>اسم التلميذ(ة): <strong>${stName}</strong></p>
+                <p>القسم: <strong>${stDept}</strong> رقم مسار: <strong>${stCode}</strong></p>
+                <p>تاريخ المخالفة: ................................. الساعة: .....................</p>
+                <p>نوع المخالفة: <br> ${isBlank ? '..................................................................................................' : (notes || '..................................................................................................')}</p>
+                <p style="margin-top:20px;">الإجراء المتخذ: ....................................................................................</p>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-top:60px;">
+                <div>توقيع الهيئة التربوية</div>
+                <div>توقيع الإدارة التربوية</div>
+            </div>
+            `;
+        } else if(docType === 'behavior_report') {
+            content = `
+            <div class="doc-header">
+                <div>المملكة المغربية<br>وزارة التربية الوطنية</div>
+                <div style="text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+            </div>
+            <h1 style="text-align:center; text-decoration:underline; margin: 40px 0;">ورقة السلوك والانضباط</h1>
+            <p>اسم الأستاذ(ة): ......................................................... المادة: .................................</p>
+            <p>اسم التلميذ(ة): <strong>${stName}</strong></p>
+            <p>القسم: <strong>${stDept}</strong> رقم مسار: <strong>${stCode}</strong></p>
+            <div style="border:1px solid #000; padding:20px; margin-top:20px;">
+                <p style="text-decoration:underline; font-weight:bold;">تقرير الأستاذ حول سلوك التلميذ:</p>
+                <div style="min-height:150px; line-height:2;">
+                    ${isBlank ? '..................................................................................................<br>..................................................................................................' : (notes || '..................................................................................................')}
+                </div>
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-top:60px;">
+                <div>توقيع الأستاذ(ة)</div>
+                <div>توقيع الإدارة التربوية</div>
+                <div>حرر بـ ................. في: ${dateStr}</div>
+            </div>
+            `;
+        } else if(docType === 'doctor_visit') {
+            content = `
+            <div class="doc-header">
+                <div>المملكة المغربية<br>وزارة التربية الوطنية</div>
+                <div style="text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+            </div>
+            <h1 style="text-align:center; text-decoration:underline; margin: 40px 0;">بطاقة زيارة الطبيب</h1>
+            <p>يسمح للتلميذ(ة): <strong>${stName}</strong></p>
+            <p>القسم: <strong>${stDept}</strong> رقم مسار: <strong>${stCode}</strong></p>
+            <p>بالتوجه إلى المركز الصحي / الطبيب وذلك بتاريخ: ${dateStr}</p>
+            <p>بسبب: ${notes || '................................'}</p>
+            <div style="border:1px solid #000; padding:15px; margin-top:30px;">
+                <p style="text-align:center; font-weight:bold;">شهادة الطبيب</p>
+                <p>أشهد أنا الموقع أسفله أن التلميذ(ة) المذكور(ة) أعلاه قد حضر(ت) للعيادة/المركز وبقي(ت) من الساعة ........... إلى الساعة ...........</p>
+                <p>التشخيص / ملاحظات: .........................................................................</p>
+                <p style="text-align:left; margin-top:20px;">توقيع الطبيب وخاتمه</p>
+            </div>
+            <div style="margin-top:40px; text-align:right;">خاتم المؤسسة</div>
+            `;
+        } else {
+            content = `
+            <div class="doc-header">
+                <div>المملكة المغربية<br>وزارة التربية الوطنية</div>
+                <div style="text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+            </div>
+            <h1 style="text-align:center; text-decoration:underline; margin: 40px 0;">التزام</h1>
+            <p>أنا الموقع أسفله التلميذ(ة): <strong>${stName}</strong></p>
+            <p>المسجل بالقسم: <strong>${stDept}</strong> بمؤسسة: <strong>${aSch || '.......'}</strong></p>
+            <p style="margin-top:20px; line-height:1.8;">
+                أصرح بشرفي أنني ألتزم بـ: <br>
+                ${notes || '..................................................................................................................................................................................................................'}
+            </p>
+            <p>وفي حالة إخلالي بهذا الالتزام، أتحمل كافة العواقب القانونية والإدارية.</p>
+            <div style="display:flex; justify-content:space-between; margin-top:60px;">
+                <div>توقيع التلميذ(ة)</div>
+                <div>توقيع ولي الأمر</div>
+                <div>حرر بـ ................. في: ${dateStr}</div>
+            </div>
+            `;
+        }
+
+        w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>وثيقة إدارية</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
+            body { font-family: 'Tajawal', sans-serif; padding: 40px; line-height: 1.6; }
+            .doc-header { display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 30px; font-weight: bold; }
+            p { font-size: 14pt; margin-bottom: 15px; }
+            strong { color: #000; }
+            @page { size: A4; margin: 20mm; }
+            @media print { body { padding: 0; } }
+        </style></head><body><div class="doc-container">${content}</div><script>window.onload=()=>window.print()</script></body></html>`);
+        w.document.close();
+    };
+
+    return (
+        <div className="t-pane on">
+            <div className="card" style={{padding: '30px'}}>
+                <h3 style={{color: 'var(--pri)', marginBottom: '25px', borderBottom: '2px solid #f1f5f9', paddingBottom: '15px'}}>إنشاء وثائق إدارية</h3>
+                
+                <div style={{display: 'grid', gridTemplateColumns: '1fr 1.5fr', gap: '30px'}}>
+                    <div>
+                        <div style={{marginBottom: '20px', position: 'relative'}}>
+                            <label className="fl">ابحث عن التلميذ:</label>
+                            <input 
+                                className="fc" 
+                                placeholder="اسم التلميذ أو رقم مسار..." 
+                                value={search} 
+                                onChange={e => handleSearch(e.target.value)} 
+                            />
+                            {filteredChoices.length > 0 && (
+                                <div style={{position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #ddd', borderRadius: '8px', zIndex: 100, boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)'}}>
+                                    {filteredChoices.map(s => (
+                                        <div 
+                                            key={s.id} 
+                                            onClick={() => selectStudent(s)}
+                                            style={{padding: '12px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0'}}
+                                            className="hover-bg"
+                                        >
+                                            <strong>{s.lastname} {s.firstname}</strong> - <small>{s.sheet}</small>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="fg" style={{marginBottom: '20px'}}>
+                            <label className="fl">نوع الوثيقة:</label>
+                            <select className="fc" value={docType} onChange={e => setDocType(e.target.value)}>
+                                <option value="absence_commitment">التزام ولي الأمر بخصوص الغياب</option>
+                                <option value="violation">تقرير مخالفة تلميذ</option>
+                                <option value="behavior_report">ورقة السلوك والانضباط</option>
+                                <option value="doctor_visit">بطاقة زيارة الطبيب</option>
+                                <option value="commitment">التزام (عام)</option>
+                            </select>
+                        </div>
+
+                        <div className="fg" style={{marginBottom: '25px'}}>
+                            <label className="fl">هاد البيان يظهر في الوثيقة (ملاحظات/أسباب):</label>
+                            <textarea 
+                                className="fc" 
+                                style={{height: '100px', resize: 'none'}} 
+                                placeholder="اكتب سببا أو ملاحظة إضافية للظهور في الوثيقة..."
+                                value={notes}
+                                onChange={e => setNotes(e.target.value)}
+                            ></textarea>
+                        </div>
+
+                        <div style={{display:'flex', gap:'10px'}}>
+                            <button className="btn bp" style={{flex: 1, padding: '15px'}} onClick={() => printDoc(false)} disabled={!selectedStudent}>
+                                💾 طباعة بيانات التلميذ
+                            </button>
+                            <button className="btn bs" style={{flex: 1, padding: '15px'}} onClick={() => printDoc(true)}>
+                                📄 طباعة نسخة فارغة
+                            </button>
+                        </div>
+                    </div>
+
+                    <div style={{background: '#f8fafc', padding: '25px', borderRadius: '12px', border: '1px dashed #cbd5e1'}}>
+                        <h4 style={{marginTop: 0, color: '#475569', marginBottom: '15px'}}>معلومات التلميذ المختار:</h4>
+                        {selectedStudent ? (
+                            <div style={{fontSize: '15px', color: '#1e293b'}}>
+                                <div style={{marginBottom: '8px'}}>الاسم الكامل: <strong>{selectedStudent.lastname} {selectedStudent.firstname}</strong></div>
+                                <div style={{marginBottom: '8px'}}>رقم مسار: <strong>{selectedStudent.code}</strong></div>
+                                <div style={{marginBottom: '8px'}}>القسم: <strong>{selectedStudent.sheet}</strong></div>
+                                <div style={{marginTop: '20px', padding: '10px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '13px', color: '#64748b'}}>
+                                    سيتم ملء هذه المعطيات تلقائياً في النموذج المختار. يرجى مراجعة إعدادات المؤسسة من شريط العنوان العلوي لملء اسم المديرية والإعدادية.
+                                </div>
+                            </div>
+                        ) : (
+                            <div style={{textAlign: 'center', padding: '40px', color: '#94a3b8'}}>
+                                <div style={{fontSize: '30px', marginBottom: '10px'}}>🔍</div>
+                                يرجى اختيار تلميذ من محرك البحث للبدء
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

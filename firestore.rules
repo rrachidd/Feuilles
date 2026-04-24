@@ -50,6 +50,18 @@ service cloud.firestore {
              (!('pin' in data) || (data.pin is string && data.pin.size() <= 100));
     }
 
+    function isValidPermit(data) {
+      return data.keys().hasAll(['userId', 'studentName', 'date']) &&
+             data.userId == request.auth.uid &&
+             data.userId is string &&
+             data.studentName is string && data.studentName.size() <= 200 &&
+             (!('studentDept' in data) || (data.studentDept is string && data.studentDept.size() <= 100)) &&
+             (!('subject' in data) || (data.subject is string && data.subject.size() <= 100)) &&
+             (!('type' in data) || (data.type is string && data.type.size() <= 50)) &&
+             (!('observation' in data) || (data.observation is string && data.observation.size() <= 500)) &&
+             data.date is string;
+    }
+
     match /students/{studentId} {
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow get: if isSignedIn() && isValidId(studentId) && (resource == null || resource.data.userId == request.auth.uid);
@@ -72,6 +84,14 @@ service cloud.firestore {
         allow create: if isSignedIn() && isValidId(pinId) && isValidPin(incoming());
         allow update: if isSignedIn() && isValidId(pinId) && isValidPin(incoming()) && incoming().userId == existing().userId;
         allow delete: if isSignedIn() && isValidId(pinId) && existing().userId == request.auth.uid;
+    }
+
+    match /permits/{permitId} {
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow get: if isSignedIn() && isValidId(permitId) && (resource == null || resource.data.userId == request.auth.uid);
+        allow create: if isSignedIn() && isValidId(permitId) && isValidPermit(incoming());
+        allow update: if isSignedIn() && isValidId(permitId) && isValidPermit(incoming()) && incoming().userId == existing().userId;
+        allow delete: if isSignedIn() && isValidId(permitId) && existing().userId == request.auth.uid;
     }
   }
 }
