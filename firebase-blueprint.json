@@ -31,6 +31,21 @@
         "aHalf": { "type": "string" }
       },
       "required": ["userId"]
+    },
+    "Pin": {
+      "title": "Pin",
+      "description": "Student PIN code",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "birthDate": { "type": "string" },
+        "gender": { "type": "string" },
+        "dept": { "type": "string" },
+        "pin": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["userId", "code"]
     }
   },
   "firestore": {
@@ -41,6 +56,10 @@
     "settings/{settingId}": {
       "schema": { "$ref": "#/entities/AbsenceSettings" },
       "description": "Saved settings for a user"
+    },
+    "pins/{pinId}": {
+      "schema": { "$ref": "#/entities/Pin" },
+      "description": "Student PIN codes"
     }
   }
 }

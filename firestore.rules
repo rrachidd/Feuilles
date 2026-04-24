@@ -38,6 +38,18 @@ service cloud.firestore {
              (!('aHalf' in data) || data.aHalf is number);
     }
 
+    function isValidPin(data) {
+      return data.keys().hasAll(['userId']) &&
+             data.userId == request.auth.uid &&
+             data.userId is string && data.userId.size() > 0 &&
+             (!('code' in data) || (data.code is string && data.code.size() <= 100)) &&
+             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+             (!('birthDate' in data) || (data.birthDate is string && data.birthDate.size() <= 100)) &&
+             (!('gender' in data) || (data.gender is string && data.gender.size() <= 100)) &&
+             (!('dept' in data) || (data.dept is string && data.dept.size() <= 100)) &&
+             (!('pin' in data) || (data.pin is string && data.pin.size() <= 100));
+    }
+
     match /students/{studentId} {
       allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow get: if isSignedIn() && isValidId(studentId) && (resource == null || resource.data.userId == request.auth.uid);
@@ -52,6 +64,14 @@ service cloud.firestore {
         allow create: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid && isValidSettings(incoming());
         allow update: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid && isValidSettings(incoming()) && incoming().userId == existing().userId;
         allow delete: if isSignedIn() && isValidId(settingId) && settingId == request.auth.uid;
+    }
+
+    match /pins/{pinId} {
+        allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow get: if isSignedIn() && isValidId(pinId) && (resource == null || resource.data.userId == request.auth.uid);
+        allow create: if isSignedIn() && isValidId(pinId) && isValidPin(incoming());
+        allow update: if isSignedIn() && isValidId(pinId) && isValidPin(incoming()) && incoming().userId == existing().userId;
+        allow delete: if isSignedIn() && isValidId(pinId) && existing().userId == request.auth.uid;
     }
   }
 }

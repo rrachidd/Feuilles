@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { auth, loginWithGoogle, logout, db } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, getDocs, setDoc, doc, writeBatch, deleteDoc, query, where, getDoc } from 'firebase/firestore';
+import { collection, getDocs, setDoc, doc, writeBatch, deleteDoc, query, where, getDoc, orderBy } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -20,7 +20,7 @@ export default function App() {
   const [fileName, setFileName] = useState('');
   
   // UI States
-  const [activeTab, setActiveTab] = useState<'students' | 'absence'>('students');
+  const [activeTab, setActiveTab] = useState<'students' | 'absence' | 'permit' | 'pin'>('students');
   const [mappingSuccess, setMappingSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -74,7 +74,7 @@ export default function App() {
 
   const loadStudents = async (userId: string) => {
     try {
-      const q = query(collection(db, "students"), where("userId", "==", userId));
+      const q = query(collection(db, "students"), where("userId", "==", userId), orderBy("id"));
       const snap = await getDocs(q);
       const loaded: any[] = [];
       const shSet = new Set<string>();
@@ -422,6 +422,8 @@ export default function App() {
                         <div className="tabs-nav no-p">
                             <button className={`t-btn ${activeTab === 'students' ? 'on' : ''}`} onClick={() => setActiveTab('students')}>قائمة الطلاب</button>
                             <button className={`t-btn ${activeTab === 'absence' ? 'on' : ''}`} onClick={() => setActiveTab('absence')}>ورقة الغياب النصف أسبوعية</button>
+                            <button className={`t-btn ${activeTab === 'permit' ? 'on' : ''}`} onClick={() => setActiveTab('permit')}>ورقة السماح بالدخول</button>
+                            <button className={`t-btn ${activeTab === 'pin' ? 'on' : ''}`} onClick={() => setActiveTab('pin')}>القن السري للتلميذ</button>
                         </div>
 
                         {activeTab === 'students' && (
@@ -551,6 +553,10 @@ export default function App() {
 
                         {activeTab === 'absence' && <AbsenceView sheets={sheets} allStudents={allStudents} rawState={{aDir, setaDir, aSch, setaSch, aTri, setaTri, aFrom, setaFrom, aTo, setaTo, aTeach, setaTeach, aHalf, setaHalf, selectedSheets, setSelectedSheets, toggleSheetSelection, toggleAllSheets }} />}
 
+                        {activeTab === 'permit' && <PermitView sheets={sheets} allStudents={allStudents} rawState={{aDir, aSch}} />}
+
+                        {activeTab === 'pin' && <PinView sheets={sheets} user={user} />}
+
                     </div>
                 </>
             )}
@@ -598,6 +604,220 @@ export default function App() {
       )}
     </>
   );
+}
+
+function PermitView({sheets, allStudents, rawState}: any) {
+    const {aDir, aSch} = rawState;
+    const [permits, setPermits] = useState<any[]>(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: ''}));
+    
+    // Per-permit search states
+    const [searchIndices, setSearchIndices] = useState<{[key: number]: string}>({});
+    const [filteredChoices, setFilteredChoices] = useState<{[key: number]: any[]}>({});
+
+    const updateSearch = (idx: number, val: string) => {
+        setSearchIndices(prev => ({...prev, [idx]: val}));
+        if (val.trim().length > 1) {
+            const t = val.toLowerCase();
+            const choices = allStudents.filter((s:any) => 
+                [s.firstname, s.lastname, s.code].some(v => String(v).toLowerCase().includes(t))
+            ).slice(0, 5);
+            setFilteredChoices(prev => ({...prev, [idx]: choices}));
+        } else {
+            setFilteredChoices(prev => ({...prev, [idx]: []}));
+        }
+    };
+
+    const updatePermit = (idx: number, data: any) => {
+        const newP = [...permits];
+        newP[idx] = {...newP[idx], ...data};
+        setPermits(newP);
+    };
+
+    const selectStudent = (idx: number, student: any) => {
+        updatePermit(idx, {
+            name: `${student.lastname} ${student.firstname}`,
+            dept: student.sheet
+        });
+        updateSearch(idx, '');
+    };
+
+    const clearPermits = () => {
+        setPermits(Array(10).fill({name: '', dept: '', date: '', time: '', type: 'غياب', observation: ''}));
+        setSearchIndices({});
+        setFilteredChoices({});
+    };
+
+    const printPermits = () => {
+        const w = window.open('', '_blank');
+        if(!w) return;
+
+        let itemsHtml = '';
+        permits.forEach((p, i) => {
+            itemsHtml += `
+            <div class="permit-item">
+                <div class="permit-header">
+                    <div style="font-size:7pt">المملكة المغربية<br>وزارة التربية الوطنية</div>
+                    <div style="font-weight:bold; font-size:10pt; border:1px solid #000; padding:1px 6px">ورقة السماح بالدخول</div>
+                    <div style="font-size:7pt; text-align:left">${aSch || '.......'}<br>${aDir || '.......'}</div>
+                </div>
+                <div class="permit-body">
+                    <div style="margin-bottom:4px; font-weight:bold; font-size:9pt;">المرجو السماح للتلميذ(ة) بالدخول:</div>
+                    <div class="permit-row"><span>الاسم واللقب:</span> <strong>${p.name || '................................'}</strong></div>
+                    <div class="permit-row"><span>القسم:</span> <strong>${p.dept || '................'}</strong></div>
+                    <div class="permit-row">
+                        <span>التاريخ:</span> <strong>.........</strong>
+                        <span style="margin-right:8px">الساعة:</span> <strong>.........</strong>
+                        <span style="margin-right:8px">النوع:</span> 
+                        <span style="display:inline-flex; align-items:center; gap:3px; border:1px solid #eee; padding:0 2px;">
+                            <span style="display:inline-block; width:10px; height:10px; border:1px solid #000; text-align:center; line-height:9px; font-size:7pt;">${p.type === 'غياب' ? '✓' : ''}</span> غياب
+                            <span style="display:inline-block; width:10px; height:10px; border:1px solid #000; text-align:center; line-height:9px; font-size:7pt; margin-right:5px;">${p.type === 'تأخر' ? '✓' : ''}</span> تأخر
+                        </span>
+                    </div>
+                    <div class="permit-row"><span>الملاحظة:</span> <strong>${p.observation || '................................'}</strong></div>
+                </div>
+                <div class="permit-footer">
+                    <span></span>
+                    <span style="text-align:left; flex:1;">توقيع الحارس العام</span>
+                </div>
+            </div>
+            `;
+        });
+
+        w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>ورقة السماح بالدخول</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
+            body { font-family: 'Tajawal', sans-serif; margin: 0; padding: 0; background: #fff; direction: rtl; }
+            .container { 
+                display: grid; 
+                grid-template-columns: 1fr 1fr; 
+                grid-template-rows: repeat(5, 1fr);
+                gap: 2mm;
+                padding: 4mm;
+                height: 100vh;
+                width: 100vw;
+                box-sizing: border-box;
+            }
+            .permit-item { 
+                border: 0.5px solid #333; 
+                padding: 5px; 
+                display: flex; 
+                flex-direction: column; 
+                justify-content: space-between;
+                height: 100%;
+                box-sizing: border-box;
+                overflow: hidden;
+                background: #fff;
+            }
+            .permit-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 3px; }
+            .permit-body { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+            .permit-row { margin-bottom: 3px; font-size: 8pt; line-height: 1.1; border-bottom: 0.5px dotted #ddd; padding-bottom: 1px; }
+            .permit-row strong { color: #000; }
+            .permit-footer { display: flex; justify-content: space-between; font-size: 7.5pt; margin-top: 2px; border-top: 0.5px solid #eee; padding-top: 2px; font-weight: bold; }
+            @page { size: A4 portrait; margin: 0; }
+            @media print {
+                body { -webkit-print-color-adjust: exact; }
+                .container { height: 297mm; width: 210mm; }
+            }
+        </style></head><body><div class="container">${itemsHtml}</div><script>window.onload=()=>window.print()</script></body></html>`);
+        w.document.close();
+    };
+
+    return (
+        <div className="t-pane on">
+            <div className="card no-p" style={{padding: '20px', marginBottom: '20px'}}>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px'}}>
+                    <h3 style={{color: 'var(--pri)', margin: 0}}>إعداد ورقة السماح بالدخول (10 تصاريح في الصفحة)</h3>
+                    <div style={{display: 'flex', gap: '10px'}}>
+                        <button className="btn bp" onClick={printPermits}>طباعة ورقة السماح (A4)</button>
+                        <button className="btn bl" onClick={clearPermits}>مسح الكل</button>
+                    </div>
+                </div>
+                
+                <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '15px'}}>
+                    {permits.map((p, i) => (
+                        <div key={i} style={{border: '1px solid var(--brd)', padding: '12px', borderRadius: '8px', background: '#f8fafc', position: 'relative'}}>
+                            <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
+                                <span style={{fontWeight: 'bold', fontSize: '13px', color: 'var(--pri)'}}>التصريح #{i+1}</span>
+                                <button onClick={() => updatePermit(i, {name: '', dept: '', observation: ''})} style={{fontSize: '10px', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer'}}>مسح</button>
+                            </div>
+                            
+                            <div style={{marginBottom: '8px', position: 'relative'}}>
+                                <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>بحث واختيار تلميذ:</label>
+                                <input 
+                                    className="fc" 
+                                    style={{fontSize: '12px', padding: '6px', marginBottom: '4px'}} 
+                                    placeholder="بحث بالاسم أو القسم..." 
+                                    value={searchIndices[i] || ''} 
+                                    onChange={e => updateSearch(i, e.target.value)} 
+                                />
+                                {filteredChoices[i] && filteredChoices[i].length > 0 && (
+                                    <div style={{position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #ddd', borderRadius: '8px', zIndex: 100, boxShadow: '0 4px 6px rgba(0,0,0,0.1)'}}>
+                                        {filteredChoices[i].map(s => (
+                                            <div 
+                                                key={s.id} 
+                                                onClick={() => selectStudent(i, s)}
+                                                style={{padding: '8px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0', fontSize: '11px'}}
+                                            >
+                                                <strong>{s.lastname} {s.firstname}</strong> - <small>{s.sheet}</small>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div style={{marginBottom: '8px'}}>
+                                <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>الاسم الكامل:</label>
+                                <input 
+                                    className="fc" 
+                                    style={{fontSize: '12px', padding: '6px'}} 
+                                    placeholder="الاسم الكامل" 
+                                    value={p.name} 
+                                    onChange={e => updatePermit(i, {name: e.target.value})} 
+                                />
+                            </div>
+
+                            <div style={{display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '8px', marginBottom: '8px'}}>
+                                <div>
+                                    <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>القسم:</label>
+                                    <select 
+                                        className="fc" 
+                                        style={{fontSize: '12px', padding: '6px'}} 
+                                        value={p.dept} 
+                                        onChange={e => updatePermit(i, {dept: e.target.value})}
+                                    >
+                                        <option value="">-- اختر القسم --</option>
+                                        {sheets.map((s: string) => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                                <div style={{display: 'flex', flexDirection: 'column'}}>
+                                    <label style={{fontSize: '11px', marginBottom: '3px'}}>النوع:</label>
+                                    <div style={{display: 'flex', gap: '8px', marginTop: '5px'}}>
+                                        <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
+                                            <input type="radio" name={`type-${i}`} checked={p.type === 'غياب'} onChange={() => updatePermit(i, {type: 'غياب'})} /> غياب
+                                        </label>
+                                        <label style={{fontSize: '12px', display: 'flex', alignItems: 'center', gap: '2px'}}>
+                                            <input type="radio" name={`type-${i}`} checked={p.type === 'تأخر'} onChange={() => updatePermit(i, {type: 'تأخر'})} /> تأخر
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label style={{fontSize: '11px', display: 'block', marginBottom: '3px'}}>ملاحظة:</label>
+                                <input 
+                                    className="fc" 
+                                    style={{fontSize: '12px', padding: '6px'}} 
+                                    placeholder="ملاحظة إضافية" 
+                                    value={p.observation} 
+                                    onChange={e => updatePermit(i, {observation: e.target.value})} 
+                                />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
 }
 
 const HALF = [['الاثنين','الثلاثاء','الأربعاء'],['الخميس','الجمعة','السبت']];
@@ -866,4 +1086,220 @@ function AbsenceView({sheets, allStudents, rawState}: any) {
             </div>
         </div>
     )
+}
+
+function PinView({sheets, user}: any) {
+    const [pinList, setPinList] = useState<any[]>([]);
+    const [selectedDept, setSelectedDept] = useState('all');
+    const [loading, setLoading] = useState(false);
+    const [pageRows, setPageRows] = useState(6);
+    const [pageCols, setPageCols] = useState(3);
+
+    useEffect(() => {
+        if(user) loadSavedPins(user.uid);
+    }, [user]);
+
+    const loadSavedPins = async (uid: string) => {
+        try {
+            const q = query(collection(db, "pins"), where("userId", "==", uid), orderBy("code"));
+            const snap = await getDocs(q);
+            const loaded: any[] = [];
+            snap.forEach(doc => loaded.push(doc.data()));
+            setPinList(loaded);
+        } catch(err) { console.error(err); }
+    };
+
+    const departments = Array.from(new Set(pinList.map(p => p.dept))).filter(Boolean).sort();
+    const filteredPins = selectedDept === 'all' ? pinList : pinList.filter(p => p.dept === selectedDept);
+
+    const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if(!files || files.length === 0 || !user) return;
+        setLoading(true);
+        try {
+            let allImported: any[] = [];
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const dataBuffer = await file.arrayBuffer();
+                const wb = XLSX.read(new Uint8Array(dataBuffer), { type: 'array' });
+                
+                wb.SheetNames.forEach(name => {
+                    const data: any[] = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1 });
+                    const sheetDept = String(data[5]?.[5] || '').trim();
+                    
+                    for (let rowIndex = 10; rowIndex < data.length; rowIndex++) {
+                        const r = data[rowIndex];
+                        if(!r || r.length < 2) continue;
+                        const massarCode = String(r[1] || '').trim();
+                        if(massarCode.length > 5) {
+                            allImported.push({
+                                code: massarCode,
+                                name: String(r[2] || '').trim(),
+                                birthDate: String(r[3] || '').trim(),
+                                gender: String(r[4] || '').trim(),
+                                pin: String(r[5] || '').trim(),
+                                dept: sheetDept,
+                                userId: user.uid
+                            });
+                        }
+                    }
+                });
+            }
+
+            if(allImported.length > 0) {
+                // Clear old pins first
+                const q = query(collection(db, "pins"), where("userId", "==", user.uid));
+                const oldSnap = await getDocs(q);
+                let delBatch = writeBatch(db);
+                let delC = 0;
+                for (const d of oldSnap.docs) {
+                    delBatch.delete(d.ref);
+                    delC++;
+                    if(delC === 400) { await delBatch.commit(); delBatch = writeBatch(db); delC = 0; }
+                }
+                if(delC > 0) await delBatch.commit();
+
+                // Save new ones in batches
+                const batchSize = 400;
+                let batch = writeBatch(db);
+                let count = 0;
+                for(let p of allImported) {
+                    const dr = doc(collection(db, "pins"));
+                    batch.set(dr, p);
+                    count++;
+                    if(count === batchSize) { await batch.commit(); batch = writeBatch(db); count = 0; }
+                }
+                if(count > 0) await batch.commit();
+                setPinList(allImported);
+                alert(`تم استيراد ${allImported.length} قن سري من ${files.length} ملفات بنجاح`);
+            }
+        } catch(err: any) { alert(err.message); }
+        setLoading(false);
+        e.target.value = ''; // Reset input
+    };
+
+    const printPins = () => {
+        if(filteredPins.length === 0) return;
+        const w = window.open('', '_blank');
+        if(!w) return;
+
+        let html = '';
+        const itemsPerPage = pageRows * pageCols;
+        for(let i=0; i<filteredPins.length; i+=itemsPerPage) {
+            const pageItems = filteredPins.slice(i, i+itemsPerPage);
+            let itemsGrid = '';
+            pageItems.forEach(p => {
+                itemsGrid += `
+                <div class="pin-card">
+                    <div class="pin-header">القن السري لمنصة مسار</div>
+                    <div class="pin-row"><span>التلميذ:</span> <strong>${p.name}</strong></div>
+                    <div class="pin-row"><span>القسم:</span> <strong>${p.dept || '...'}</strong></div>
+                    <div class="pin-row"><span>رقم مسار:</span> <strong>${p.code}</strong></div>
+                    <div class="pin-row"><span>الازدياد:</span> <strong>${p.birthDate || '...'}</strong></div>
+                    <div class="pin-row pin-code"><span>القن السري:</span> <strong>${p.pin}</strong></div>
+                    <div class="pin-footer">يرجى عدم مشاركة هذا القن مع أي شخص</div>
+                </div>
+                `;
+            });
+            html += `<div class="pin-page">${itemsGrid}</div>`;
+        }
+
+        w.document.write(`<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>القن السري للتلاميذ</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap');
+            body { font-family: 'Tajawal', sans-serif; margin:0; padding:0; direction:rtl; background:#fff; }
+            .pin-page {
+                display: grid;
+                grid-template-columns: repeat(${pageCols}, 1fr);
+                grid-template-rows: repeat(${pageRows}, 1fr);
+                gap: 5mm;
+                padding: 10mm;
+                height: 100vh;
+                box-sizing: border-box;
+                page-break-after: always;
+            }
+            .pin-card {
+                border: 1px solid #000;
+                padding: 10px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                box-sizing: border-box;
+                text-align: center;
+                background: #fff;
+            }
+            .pin-header { font-weight: bold; font-size: 10pt; border-bottom: 1px solid #000; margin-bottom: 8px; padding-bottom: 4px; }
+            .pin-row { font-size: 9pt; margin-bottom: 4px; text-align: right; }
+            .pin-row span { color: #666; width: 60px; display: inline-block; }
+            .pin-code { font-size: 12pt; background: #f0f0f0; padding: 5px; border-radius: 4px; text-align: center; margin-top: 5px; }
+            .pin-footer { font-size: 7pt; color: #888; margin-top: 8px; font-style: italic; }
+            @page { size: A4 portrait; margin: 0; }
+            @media print { .pin-page { height: 297mm; width: 210mm; } }
+        </style></head><body>${html}<script>window.onload=()=>window.print()</script></body></html>`);
+        w.document.close();
+    };
+
+    return (
+        <div className="t-pane on">
+            <div className="card no-p" style={{padding: '20px', marginBottom: '20px'}}>
+                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
+                    <h3 style={{color: 'var(--pri)', margin: 0}}>إدارة القن السري للتلاميذ</h3>
+                    <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
+                        <select 
+                            className="fc" 
+                            style={{width: 'auto', minWidth: '150px'}} 
+                            value={selectedDept} 
+                            onChange={e => setSelectedDept(e.target.value)}
+                        >
+                            <option value="all">كل الأقسام</option>
+                            {departments.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                        <button className="btn bs" onClick={() => document.getElementById('pinInput')?.click()} disabled={loading}>
+                            {loading ? 'جاري الاستيراد...' : 'استيراد القن السري (Excel)'}
+                        </button>
+                        <input type="file" id="pinInput" accept=".xlsx,.xls" hidden multiple onChange={handleImport} />
+                        <button className="btn bp" onClick={printPins} disabled={filteredPins.length === 0}>طباعة ({filteredPins.length})</button>
+                    </div>
+                </div>
+
+                <div className="stats no-p" style={{marginBottom: '20px', gridTemplateColumns: 'repeat(3, 1fr)'}}>
+                    <div className="stat"><div className="stat-n">{filteredPins.length}</div><div className="stat-l">الأقنان المختارة</div></div>
+                    <div className="stat"><div className="stat-n">{pageRows * pageCols}</div><div className="stat-l">عنصر في الصفحة</div></div>
+                    <div className="stat">
+                        <div style={{display:'flex', gap:'5px', justifyContent:'center'}}>
+                           <select className="fc" style={{width:'60px', padding:'2px'}} value={pageRows} onChange={e=>setPageRows(parseInt(e.target.value))}>
+                               {[4,5,6,7,8].map(n=><option key={n} value={n}>{n} rows</option>)}
+                           </select>
+                           <select className="fc" style={{width:'60px', padding:'2px'}} value={pageCols} onChange={e=>setPageCols(parseInt(e.target.value))}>
+                               {[1,2,3,4].map(n=><option key={n} value={n}>{n} cols</option>)}
+                           </select>
+                        </div>
+                        <div className="stat-l">تخطيط الطباعة</div>
+                    </div>
+                </div>
+
+                <div className="tscroll">
+                    <table className="dtbl">
+                        <thead>
+                            <tr><th>#</th><th>رقم مسار</th><th>الاسم الكامل</th><th>القسم</th><th>تاريخ الازدياد</th><th>الجنس</th><th>القن السري</th></tr>
+                        </thead>
+                        <tbody>
+                            {filteredPins.map((p, i) => (
+                                <tr key={i}>
+                                    <td>{i+1}</td>
+                                    <td><strong>{p.code}</strong></td>
+                                    <td>{p.name}</td>
+                                    <td>{p.dept}</td>
+                                    <td>{p.birthDate}</td>
+                                    <td>{p.gender}</td>
+                                    <td><code style={{background:'#f1f5f9', padding:'2px 6px', borderRadius:'4px', color:'var(--pri)'}}>{p.pin}</code></td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {filteredPins.length === 0 && <div style={{textAlign:'center', padding:'40px', color:'#94a3b8'}}>لا توجد بيانات لهذه الفئة، يرجى استيراد ملفات Excel</div>}
+                </div>
+            </div>
+        </div>
+    );
 }
